@@ -40,6 +40,47 @@ TAG_AUDIO_EVENTS = os.getenv("TAG_AUDIO_EVENTS", "false")
 app = FastAPI(title="ElevenLabs STT adapter (OpenAI-compatible)")
 
 
+# ElevenLabs returns ISO-639-3 codes (e.g. "eng"); Vexa's TranscriptionSegment
+# validates Whisper's ISO-639-1 set (e.g. "en"). Unmapped -> "en" so a segment
+# always stores with a valid code instead of being dropped.
+_VEXA_LANGS = {
+    "af","am","ar","as","az","ba","be","bg","bn","bo","br","bs","ca","cs","cy",
+    "da","de","el","en","es","et","eu","fa","fi","fo","fr","gl","gu","ha","haw",
+    "he","hi","hr","ht","hu","hy","id","is","it","ja","jw","ka","kk","km","kn",
+    "ko","la","lb","ln","lo","lt","lv","mg","mi","mk","ml","mn","mr","ms","mt",
+    "my","ne","nl","nn","no","oc","pa","pl","ps","pt","ro","ru","sa","sd","si",
+    "sk","sl","sn","so","sq","sr","su","sv","sw","ta","te","tg","th","tk","tl",
+    "tr","tt","uk","ur","uz","vi","yi","yo","yue","zh",
+}
+_ISO3_TO_1 = {
+    "afr":"af","amh":"am","ara":"ar","asm":"as","aze":"az","bak":"ba","bel":"be",
+    "bul":"bg","ben":"bn","bod":"bo","tib":"bo","bre":"br","bos":"bs","cat":"ca",
+    "ces":"cs","cze":"cs","cym":"cy","wel":"cy","dan":"da","deu":"de","ger":"de",
+    "ell":"el","gre":"el","eng":"en","spa":"es","est":"et","eus":"eu","baq":"eu",
+    "fas":"fa","per":"fa","fin":"fi","fao":"fo","fra":"fr","fre":"fr","glg":"gl",
+    "guj":"gu","hau":"ha","heb":"he","hin":"hi","hrv":"hr","hat":"ht","hun":"hu",
+    "hye":"hy","arm":"hy","ind":"id","isl":"is","ice":"is","ita":"it","jpn":"ja",
+    "jav":"jw","kat":"ka","geo":"ka","kaz":"kk","khm":"km","kan":"kn","kor":"ko",
+    "lat":"la","ltz":"lb","lin":"ln","lao":"lo","lit":"lt","lav":"lv","mlg":"mg",
+    "mri":"mi","mao":"mi","mkd":"mk","mac":"mk","mal":"ml","mon":"mn","mar":"mr",
+    "msa":"ms","may":"ms","mlt":"mt","mya":"my","bur":"my","nep":"ne","nld":"nl",
+    "dut":"nl","nno":"nn","nor":"no","nob":"no","oci":"oc","pan":"pa","pol":"pl",
+    "pus":"ps","por":"pt","ron":"ro","rum":"ro","rus":"ru","san":"sa","snd":"sd",
+    "sin":"si","slk":"sk","slo":"sk","slv":"sl","sna":"sn","som":"so","sqi":"sq",
+    "alb":"sq","srp":"sr","sun":"su","swe":"sv","swa":"sw","tam":"ta","tel":"te",
+    "tgk":"tg","tha":"th","tuk":"tk","tgl":"tl","tur":"tr","tat":"tt","ukr":"uk",
+    "urd":"ur","uzb":"uz","vie":"vi","yid":"yi","yor":"yo","yue":"yue","zho":"zh",
+    "chi":"zh","cmn":"zh",
+}
+
+
+def _normalize_lang(code) -> str:
+    c = (code or "").strip().lower()
+    if c in _VEXA_LANGS:
+        return c
+    return _ISO3_TO_1.get(c, "en")
+
+
 def map_to_verbose_json(el: dict) -> dict:
     """ElevenLabs SpeechToTextChunkResponseModel -> OpenAI verbose_json."""
     # Multichannel responses wrap per-channel transcripts; Vexa sends mono.
@@ -83,7 +124,7 @@ def map_to_verbose_json(el: dict) -> dict:
 
     return {
         "text": text,
-        "language": el.get("language_code", ""),
+        "language": _normalize_lang(el.get("language_code")),
         "language_probability": el.get("language_probability"),
         "duration": duration,
         "segments": segments,

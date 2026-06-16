@@ -17,7 +17,7 @@ client = TestClient(main.app)
 
 # A realistic ElevenLabs Scribe response.
 EL_RESPONSE = {
-    "language_code": "en",
+    "language_code": "eng",
     "language_probability": 0.98,
     "text": "Hello world",
     "audio_duration_secs": 1.2,
@@ -45,6 +45,19 @@ def test_mapping_unit():
     assert main.map_to_verbose_json({"transcripts": [EL_RESPONSE]})["text"] == "Hello world"
     # silence -> no segments
     assert main.map_to_verbose_json({"text": "", "words": []})["segments"] == []
+
+
+def test_language_normalization():
+    assert main._normalize_lang("eng") == "en"
+    assert main._normalize_lang("en") == "en"
+    assert main._normalize_lang("spa") == "es"
+    assert main._normalize_lang("jpn") == "ja"
+    assert main._normalize_lang("zho") == "zh"
+    assert main._normalize_lang("haw") == "haw"
+    assert main._normalize_lang("yue") == "yue"
+    assert main._normalize_lang("ENG") == "en"
+    assert main._normalize_lang("") == "en"
+    assert main._normalize_lang("xyz") == "en"
 
 
 def test_endpoint_auth_and_flow(monkeypatch):
