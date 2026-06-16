@@ -50,3 +50,10 @@ python-dotenv>=1.2.1
 email-validator>=2.0
 
 Mako>=1.3.12
+
+# Observability — OpenTelemetry auto-instrumentation (lite ships OTLP/HTTP export)
+# opentelemetry-bootstrap (run at build time) adds the matching instrumentors
+# for the packages above (fastapi, requests, redis, sqlalchemy, psycopg2, httpx,
+# urllib, logging). The OTLP/HTTP exporter targets OTEL_EXPORTER_OTLP_ENDPOINT.
+opentelemetry-distro>=0.50b0
+opentelemetry-exporter-otlp-proto-http>=1.29.0

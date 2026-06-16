@@ -94,6 +94,10 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements-mcp.txt
 RUN rm -f /tmp/requirements-*.txt
 
+# Install OpenTelemetry instrumentors matching the packages installed above
+# (fastapi, requests, redis, sqlalchemy, psycopg2, httpx, urllib, logging).
+RUN opentelemetry-bootstrap -a install
+
 # Copy shared libraries
 COPY libs/schema-sync /app/schema-sync
 COPY libs/admin-models /app/admin-models
@@ -233,6 +237,8 @@ WORKDIR /app
 COPY deploy/lite/supervisord.conf /etc/supervisor/conf.d/vexa.conf
 COPY deploy/lite/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+COPY deploy/lite/otel-exec.sh /usr/local/bin/otel-exec
+RUN chmod +x /usr/local/bin/otel-exec
 RUN mkdir -p /var/lib/vexa/recordings /var/log/vexa-bots
 
 # Test audio for transcription startup check
@@ -269,6 +275,15 @@ ENV DISPLAY=:99
 # Logging
 ENV LOG_LEVEL=info \
     PYTHONUNBUFFERED=1
+
+# Observability — OpenTelemetry (LITE-ONLY). These are inert unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is supplied at runtime; otel-exec only wraps a
+# service under opentelemetry-instrument when that endpoint is set.
+ENV OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+    OTEL_TRACES_EXPORTER=otlp \
+    OTEL_METRICS_EXPORTER=otlp \
+    OTEL_LOGS_EXPORTER=otlp \
+    OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
 
 # Recording storage defaults (lite — local filesystem)
 ENV RECORDING_ENABLED=true \
