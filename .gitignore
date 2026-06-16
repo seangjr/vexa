@@ -182,4 +182,7 @@ tests3/.state-*
 
 # 0.11 MANIFEST figures (override *.png ignore)
 !docs/0.11/*.png
+# Dashboard provider/app icons are tracked assets (override *.png) — without this
+# `railway up` honors *.png and strips them, breaking logos in the deployed dashboard.
+!services/dashboard/public/icons/*.png
 !contracts/*/v*/examples/*.wav
