@@ -93,6 +93,20 @@ def test_endpoint_auth_and_flow(monkeypatch):
     assert captured["data"]["language_code"] == "en"
 
 
+def test_missing_key_returns_503():
+    saved = main.ELEVENLABS_API_KEY
+    main.ELEVENLABS_API_KEY = None
+    try:
+        r = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("c.wav", b"RIFFxxxxWAVE", "audio/wav")},
+            headers={"Authorization": "Bearer shh"},
+        )
+        assert r.status_code == 503, r.text
+    finally:
+        main.ELEVENLABS_API_KEY = saved
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

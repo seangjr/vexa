@@ -31,9 +31,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 log = logging.getLogger("elevenlabs-stt-adapter")
 
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-if not ELEVENLABS_API_KEY:
-    raise RuntimeError("ELEVENLABS_API_KEY is required")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")  # validated per-request so the service boots without it
 ELEVENLABS_URL = os.getenv("ELEVENLABS_STT_URL", "https://api.elevenlabs.io/v1/speech-to-text")
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "scribe_v1")
 ADAPTER_TOKEN = os.getenv("ADAPTER_TOKEN", "")
@@ -101,6 +99,8 @@ async def health():
 async def transcribe(request: Request, authorization: Optional[str] = Header(None)):
     if ADAPTER_TOKEN and authorization != f"Bearer {ADAPTER_TOKEN}":
         raise HTTPException(401, "invalid transcription token")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(503, "ELEVENLABS_API_KEY not configured")
 
     form = await request.form()
     upload: Any = form.get("file")
