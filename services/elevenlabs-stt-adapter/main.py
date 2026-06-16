@@ -14,7 +14,7 @@ each chunk and emit one segment — no diarization needed from ElevenLabs.
 
 Env:
   ELEVENLABS_API_KEY   required — your ElevenLabs key (sent as xi-api-key)
-  ELEVENLABS_MODEL     model_id (default "scribe_v1"; "scribe_v2" also valid)
+  ELEVENLABS_MODEL     model_id (default "scribe_v2"; "scribe_v1" also valid)
   ELEVENLABS_STT_URL   override endpoint (default https://api.elevenlabs.io/v1/speech-to-text)
   ADAPTER_TOKEN        optional — if set, Vexa must send Authorization: Bearer <token>
   TAG_AUDIO_EVENTS     "false" (default) to keep (laughter)/(footsteps) out of transcripts
@@ -28,16 +28,46 @@ from typing import Any, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from singlish import KEYTERMS, REFINEMENT_SYSTEM_PROMPT, deterministic_normalize
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 log = logging.getLogger("elevenlabs-stt-adapter")
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")  # validated per-request so the service boots without it
 ELEVENLABS_URL = os.getenv("ELEVENLABS_STT_URL", "https://api.elevenlabs.io/v1/speech-to-text")
-ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "scribe_v1")
+ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "scribe_v2")
 ADAPTER_TOKEN = os.getenv("ADAPTER_TOKEN", "")
 TAG_AUDIO_EVENTS = os.getenv("TAG_AUDIO_EVENTS", "false")
 
+STT_KEYTERMS_ENABLED = os.getenv("STT_KEYTERMS_ENABLED", "true")
+STT_EXTRA_KEYTERMS = os.getenv("STT_EXTRA_KEYTERMS", "")
+STT_REFINEMENT_ENABLED = os.getenv("STT_REFINEMENT_ENABLED", "true")
+STT_REFINEMENT_MODEL = os.getenv("STT_REFINEMENT_MODEL", "openai/gpt-4o-mini")
+STT_REFINEMENT_API_KEY = os.getenv("STT_REFINEMENT_API_KEY", "")
+STT_REFINEMENT_BASE_URL = os.getenv("STT_REFINEMENT_BASE_URL", "https://ai-gateway.vercel.sh/v1")
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "")
+
 app = FastAPI(title="ElevenLabs STT adapter (OpenAI-compatible)")
+
+
+def _truthy(v: str) -> bool:
+    return v.lower() in ("1", "true", "yes", "on")
+
+
+def _build_effective_keyterms() -> list[str]:
+    seen: dict[str, None] = {}
+    for term in KEYTERMS:
+        if len(term) <= 50 and term not in seen:
+            seen[term] = None
+    if STT_EXTRA_KEYTERMS:
+        for part in STT_EXTRA_KEYTERMS.split(","):
+            term = part.strip()
+            if term and len(term) <= 50 and term not in seen:
+                seen[term] = None
+    return list(seen)[:100]
+
+
+_EFFECTIVE_KEYTERMS: list[str] = _build_effective_keyterms()
 
 
 # ElevenLabs returns ISO-639-3 codes (e.g. "eng"); Vexa's TranscriptionSegment
@@ -87,7 +117,7 @@ def map_to_verbose_json(el: dict) -> dict:
     if isinstance(el.get("transcripts"), list) and el["transcripts"]:
         el = el["transcripts"][0]
 
-    text = el.get("text", "") or ""
+    text = deterministic_normalize(el.get("text", "") or "")
     words: list[dict] = []
     logprobs: list[float] = []
     for w in el.get("words") or []:
@@ -131,6 +161,35 @@ def map_to_verbose_json(el: dict) -> dict:
     }
 
 
+async def refine_text(client: httpx.AsyncClient, text: str) -> str:
+    """LLM post-ASR correction. Strictly fail-open — never breaks transcription."""
+    if not _truthy(STT_REFINEMENT_ENABLED) or not STT_REFINEMENT_API_KEY or not text.strip():
+        return text
+    try:
+        r = await client.post(
+            f"{STT_REFINEMENT_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {STT_REFINEMENT_API_KEY}"},
+            json={
+                "model": STT_REFINEMENT_MODEL,
+                "temperature": 0,
+                "max_tokens": max(64, min(1024, len(text) * 2)),
+                "messages": [
+                    {"role": "system", "content": REFINEMENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            log.warning("LLM refinement %s: %s", r.status_code, r.text[:200])
+            return text
+        refined = r.json()["choices"][0]["message"]["content"].strip()
+        return refined if refined else text
+    except Exception as exc:
+        log.warning("LLM refinement failed (non-fatal): %s", exc)
+        return text
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -158,9 +217,25 @@ async def transcribe(request: Request, authorization: Optional[str] = Header(Non
         "tag_audio_events": TAG_AUDIO_EVENTS,
         "file_format": "other",
     }
-    language = form.get("language")
-    if isinstance(language, str) and language and language.lower() not in ("auto", "none"):
-        data["language_code"] = language
+
+    # Language: STT_LANGUAGE env overrides form value; 'auto' -> omit language_code entirely.
+    lang_override = STT_LANGUAGE.strip()
+    if lang_override and lang_override.lower() == "auto":
+        pass  # omit language_code entirely
+    elif lang_override:
+        data["language_code"] = lang_override
+    else:
+        language = form.get("language")
+        if isinstance(language, str) and language and language.lower() not in ("auto", "none"):
+            data["language_code"] = language
+
+    # Keyterms biasing: scribe_v2 only.
+    if (
+        ELEVENLABS_MODEL.startswith("scribe_v2")
+        and _truthy(STT_KEYTERMS_ENABLED)
+        and _EFFECTIVE_KEYTERMS
+    ):
+        data["keyterms"] = _EFFECTIVE_KEYTERMS
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         r = await client.post(
@@ -169,8 +244,16 @@ async def transcribe(request: Request, authorization: Optional[str] = Header(Non
             data=data,
             files={"file": (filename, audio, content_type)},
         )
-    if r.status_code != 200:
-        log.warning("ElevenLabs STT %s: %s", r.status_code, r.text[:300])
-        raise HTTPException(502, f"ElevenLabs STT error {r.status_code}: {r.text[:300]}")
+        if r.status_code != 200:
+            log.warning("ElevenLabs STT %s: %s", r.status_code, r.text[:300])
+            raise HTTPException(502, f"ElevenLabs STT error {r.status_code}: {r.text[:300]}")
 
-    return map_to_verbose_json(r.json())
+        result = map_to_verbose_json(r.json())
+
+        if result.get("text", "").strip():
+            refined = await refine_text(client, result["text"])
+            result["text"] = refined
+            if result.get("segments"):
+                result["segments"][0]["text"] = refined
+
+    return result
